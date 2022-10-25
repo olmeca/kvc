@@ -11,6 +11,8 @@ const
     kvs <key>          prints the secret that was stored under key <key>
     kvs <key> -        removes the secret with key <key> from the store.
     kvs kvspass        protect the key-value store with a password
+    kvs exportentries  print for every entry a kvs command for importing
+                       into a new store.
 
   Example:
     # store a password in the key-value store
@@ -30,6 +32,7 @@ const
   secretsFileName = ".kvs"
   passwordMinLength = 8
   passwordKey = "kvspass"
+  exportKey = "exportentries"
   lastLoginKey = "kvslastlogin"
   maxLoginValidityIntervalSecs = 3600
 
@@ -40,6 +43,7 @@ type
 
 var secrets = newTable[string, string]()
 var secretsDirty = false
+var authenticationRequired = false
 
 proc showHelp() =
   echo helpText
@@ -101,7 +105,8 @@ proc setSecret(key: string, value: string) =
   if value == "-":
     del(secrets, sKey)
   else:
-    secrets[sKey] = twofishEncryptBase64(value)
+    let decValue =  if key == passwordKey: twofishDecryptBase64(value) else: value
+    secrets[sKey] = twofishEncryptBase64(decValue)
 
 proc isPasswordProtected(): bool =
    existsSecret(passwordKey)
@@ -131,7 +136,7 @@ proc passwordRecentlyEntered(): bool =
   else: false
 
 proc askPasswordIfNeeded() =
-  if isPasswordProtected() and not passwordRecentlyEntered():
+  if isPasswordProtected() and (not passwordRecentlyEntered() or authenticationRequired):
     validatePassword("Please enter KVC password:")
   else: discard
 
@@ -139,9 +144,20 @@ proc showSecret(key: string) =
   askPasswordIfNeeded()
   echo getDecryptedSecret(key)
 
+proc exportStore() =
+  askPasswordIfNeeded()
+  for k, v in secrets.pairs:
+    let key = twofishDecryptBase64(k)
+    if k != lastLoginKey:
+      let value = if key == passwordKey: v else: twofishDecryptBase64(v)
+      echo ("kvs $# '$#'" % [key, value])
+
 proc processValue(key: string) =
   if key == passwordKey:
     setPassword()
+  elif key == exportKey:
+    authenticationRequired = true
+    exportStore()
   else:
     showSecret(key)
 

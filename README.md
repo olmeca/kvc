@@ -14,8 +14,8 @@ the value for command line argument `storepass` of the command
 
 ### How secure is it?
 `kvc` stores your secrets in encrypted form ([TwoFish](https://en.wikipedia.org/wiki/Twofish)) into a file 
-called `.kvs` in your home directory. You can protect access
-to your secrets by setting a password with this command:
+called `.kvs` in your home directory. 
+You can protect access to `kvs` by setting a password with this command:
 ```
 kvc kvcpass
 ```
@@ -48,3 +48,20 @@ Please enter KVC password:
 Please reenter KVC password:
 user@host$ %
 ```
+### Hardcoded encryption key
+As stated above, the contents of the `.kvc` file is always
+  encrypted. The encryption key used to encrypt/decrypt the
+  contents is generated at compile time. Every time you recompile `kvs`,
+  a new encryption key will be generated. As a consequence, after each 
+recompilation your existing keystore will become inaccessible.
+### Export and reimport of KVS contents
+  If you want to replace your `kvs` version
+  by a newer version, you should first export the contents, and then
+  delete the existing store at `~/.kvs`. After installing a newer 
+  version you can import the contents
+  ```
+  user@host$ % kvc exportentries > kvcimport.sh
+  user@host$ % rm ~/.kvc
+  user@host$ % cp <path-to-new-kvc>/kvc /usr/bin/kvc
+  user@host$ % sh kvcimport.sh
+  ```
