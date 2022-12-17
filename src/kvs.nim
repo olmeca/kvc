@@ -1,4 +1,5 @@
-import std/strutils, streams, tables, os, twofishencryption, times
+import std/strutils, std/sequtils, streams, tables, os, parseopt, times, logging, pegs, sugar
+import kvs/common, kvs/twofishencryption
 
 
 const
@@ -29,151 +30,250 @@ const
 
   Created by Rudi Angela
   """
-  secretsFileName = ".kvs"
+  kvsFileName = ".kvs"
   passwordMinLength = 8
-  passwordKey = "kvspass"
-  exportKey = "exportentries"
-  lastLoginKey = "kvslastlogin"
-  maxLoginValidityIntervalSecs = 3600
+  passwordKey = "_kvspass"
+  lastLoginKey = "_kvslastlogin"
+  passwordWaivePeriodKey = "_passtime"
+  maxLoginValidityIntervalMinutes = 60
+  
+  passwordCommand = "password"
+  exportCommand = "export"
+  passtimeCommand = "passtime"
+  encryptionEnabled = false
 
 type
   InvalidPasswordError = object of ValueError
   NewPasswordError = object of ValueError
   ValueNotFoundError = object of ValueError
+  KeyAlreadyExists = object of ValueError
 
-var secrets = newTable[string, string]()
-var secretsDirty = false
+  UserAction* = enum
+    AddAction, UpdateAction, DeleteAction, HelpAction, CmdAction
+
+let 
+  digitsPattern = peg"\d+"
+  keyPattern = peg"[a-zA-Z] [a-zA-Z0-9_-]+"
+  keyValuePattern = peg"{[a-zA-Z0-9_-.]+} '::' {.+} !."
+  reservedKeys = [ passwordKey, passwordWaivePeriodKey, lastLoginKey ]
+
+var keyValueStore = newTable[string, string]()
+var storeIsDirty = false
 var authenticationRequired = false
+var userAction = CmdAction
+
+
+proc getpass(prompt: cstring) : cstring {.header: "<unistd.h>", importc: "getpass".}
 
 proc showHelp() =
   echo helpText
 
-proc getpass(prompt: cstring) : cstring {.header: "<unistd.h>", importc: "getpass".}
-
-proc storageKey(name: string): string =
-  twofishEncryptBase64(name)
+proc isReserved(key: string): bool =
+  reservedKeys.contains(key)
 
 proc askPassword(prompt: string): string =
   result = $(getpass(prompt))
 
-proc askNewPassword(): string =
-  var pw1 = askPassword("Enter new password:")
-  var pw2 = askPassword("Reenter new password:")
-  if pw1 != pw2:
-    raise newException(NewPasswordError, "Different values entered for new password.")
-  elif len(pw1) < passwordMinLength:
-    raise newException(NewPasswordError, "Password must be at least 8 characters long.")
-  else:
-    result = pw1
+proc storeFilePath(): string =
+  joinPath(getHomeDir(), kvsFileName)
 
-proc secretsFilePath(): string =
-  joinPath(getHomeDir(), secretsFileName)
 
-proc saveSecrets() =
-  var outStream: Stream = newFileStream(secretsFilePath(), fmWrite)
-  for name, value in secrets.pairs:
-    outStream.write("$#:$#\l" % [name, value])
+proc writeStore(outStream: Stream) =
+  for name, value in keyValueStore.pairs:
+    outStream.write("$#::$#\l" % [name, value])
+
+proc saveStore() =
+  var outStream = newStringStream()
+  writeStore(outStream)
+  outStream.setPosition(0)
+  let content = outStream.readAll()
+  let fileContent = if encryptionEnabled: twofishEncrypt(content) else: content
+  writeFile(storeFilePath(), fileContent)
   close(outStream)
 
 proc nowAsSeconds(): int =
   int(toUnix(now().toTime()))
 
+
 proc readSecrets() =
-  if fileExists(secretsFilePath()):
-    for line in lines secretsFilePath():
-      if len(line) > 0:
-        let parts = line.split(":")
-        secrets[parts[0]] = parts[1]
+  if fileExists(storeFilePath()):
+    let fileContents = readFile(storeFilePath())
+    let contents = if encryptionEnabled: twofishDecrypt(fileContents) else: fileContents
+    var inStream = newStringStream(contents)
+    var line: string
+    while inStream.readLine(line):
+      if line =~ keyValuePattern:
+        keyValueStore[matches[0]] = matches[1]
       else: discard
+    close(inStream)
+  else: discard
 
-proc existsSecret(key: string): bool =
-  hasKey(secrets, storageKey(key))
+proc validateKey(key: string) =
+  if not (key =~ keyPattern):
+    quit("Invalid key: '$#'. Keys start with a letter and may contain letters, digits, dashes and underscores." % key)
 
-proc getSecret(key: string): string =
-  let skey = storageKey(key)
-  if hasKey(secrets, skey):
-    secrets[skey]
+proc existsKey(key: string): bool =
+  hasKey(keyValueStore, key)
+
+proc getValueForKey(key: string): string =
+  if hasKey(keyValueStore, key):
+    keyValueStore[key]
   else:
-    raise newException(ValueNotFoundError, "No value found for key '$#'." % key)
+    quit("No value found for key '$#'." % key)
 
-proc getDecryptedSecret(key: string): string =
-  twofishDecryptBase64(getSecret(key))
-
-proc setSecret(key: string, value: string) =
-  let sKey = storageKey(key)
-  secretsDirty = true
-  if value == "-":
-    del(secrets, sKey)
-  else:
-    let decValue =  if key == passwordKey: twofishDecryptBase64(value) else: value
-    secrets[sKey] = twofishEncryptBase64(decValue)
+proc setValue(key: string, value: string) =
+  debug("setValue '$#' -> '$#'" % [key, value])
+  keyValueStore[key] = value
+  storeIsDirty = true
 
 proc isPasswordProtected(): bool =
-   existsSecret(passwordKey)
+   existsKey(passwordKey)
+
+proc getIntValue(key: string, defValue: int): int =
+  if existsKey(key):
+    parseInt(keyValueStore[key])
+  else:
+    defValue
+
+proc passwordRecentlyEntered(): bool =
+  let lastTimeSecs = getIntValue(lastLoginKey, 0)
+  let passTTLminutes = getIntValue(passwordWaivePeriodKey, maxLoginValidityIntervalMinutes)
+  let passTTLSecs = passTTLminutes * 60
+  let nowSeconds = nowAsSeconds()
+  nowSeconds - lastTimeSecs < passTTLSecs
 
 proc validatePassword(prompt: string) =
   if isPasswordProtected():
     let userEntry = askPassword(prompt)
-    let encryptedEntry = twofishEncryptBase64(userEntry)
-    let encryptedPassword = getSecret(passwordKey)
-    if encryptedEntry != encryptedPassword:
-      raise newException(InvalidPasswordError, "Wrong password entered.")
-    setSecret(lastLoginKey, intToStr(nowAsSeconds()))
+    let storedPassword = getValueForKey(passwordKey)
+    if userEntry != storedPassword:
+      quit("Wrong password entered.")
+    else:
+      setValue(lastLoginKey, intToStr(nowAsSeconds()))
   else: discard
-
-proc setPassword() =
-  validatePassword("Enter old password:")
-  let newPassword = askNewPassword()
-  setSecret(passwordKey, newPassword)
-
-
-proc passwordRecentlyEntered(): bool =
-  if hasKey(secrets, storageKey(lastLoginKey)):
-    let lastTimeString = getDecryptedSecret(lastLoginKey)
-    let lastTime = parseInt(lastTimeString)
-    let nowSeconds = nowAsSeconds()
-    nowSeconds - lastTime < maxLoginValidityIntervalSecs
-  else: false
 
 proc askPasswordIfNeeded() =
   if isPasswordProtected() and (not passwordRecentlyEntered() or authenticationRequired):
     validatePassword("Please enter KVC password:")
   else: discard
 
-proc showSecret(key: string) =
+
+proc addValue(key: string, value: string) =
+  validateKey(key)
   askPasswordIfNeeded()
-  echo getDecryptedSecret(key)
+  if not keyValueStore.hasKey(key):
+    setValue(key, value)
+  else:
+    quit("Key '$#' already exists. Please use '-u' to update it." % key)
+
+proc deleteValues(keys: seq[string]) =
+  askPasswordIfNeeded()
+  for key in keys:
+    if not reservedKeys.contains(key):
+      keyValueStore.del(key)
+
+proc updateValue(key: string, value: string) =
+  validateKey(key)
+  askPasswordIfNeeded()
+  if keyValueStore.hasKey(key):
+    setValue(key, value)
+  else:
+    quit("Key '$#' does not exist. Please use '-a' to add it.")
+
+
+proc askNewPassword(): string =
+  var pw1 = askPassword("Enter new password:")
+  var pw2 = askPassword("Reenter new password:")
+  if pw1 != pw2:
+    quit("Different values entered for new password.")
+  elif len(pw1) < passwordMinLength:
+    quit("Password must be at least 8 characters long.")
+  else:
+    result = pw1
+
+proc setPassword() =
+  validatePassword("Enter old password:")
+  let newPassword = askNewPassword()
+  setValue(passwordKey, newPassword)
+
+proc setPassTime(value: string) =
+  if value =~ digitsPattern:
+    askPasswordIfNeeded()
+    setValue(passwordWaivePeriodKey, value)
+  else:
+    quit("Invalid value for integer: '$#'" % value)
+
+
+proc showValuesForKeys(keys: seq[string]) =
+  echo keys.map(key => getValueForKey(key)).join(" ")
 
 proc exportStore() =
   askPasswordIfNeeded()
-  for k, v in secrets.pairs:
-    let key = twofishDecryptBase64(k)
-    if k != lastLoginKey:
-      let value = if key == passwordKey: v else: twofishDecryptBase64(v)
-      echo ("kvs $# '$#'" % [key, value])
+  for key, value in keyValueStore.pairs:
+    if not reservedKeys.contains(key):
+      echo ("kvs -a $# '$#'" % [key, value])
 
-proc processValue(key: string) =
-  if key == passwordKey:
-    setPassword()
-  elif key == exportKey:
-    authenticationRequired = true
-    exportStore()
-  else:
-    showSecret(key)
-
-proc setKeyValue(key: string, value: string) =
-  askPasswordIfNeeded()
-  setSecret(key, value)
+proc readCmdLine(): seq[string] =
+  result = @[]
+  var cmdLineOptions = initOptParser()
+  for kind, key, value in getopt(cmdLineOptions):
+    case kind
+    of cmdShortOption:
+      case key
+      of "h":
+        userAction = HelpAction
+      of "a":
+        userAction = AddAction
+      of "d":
+        userAction = DeleteAction
+      of "u":
+        userAction = UpdateAction
+      of "D":
+        enableLogging()
+      else:
+        quit("Invalid command option: '$#'" % key)
+    of cmdArgument:
+      result.add(key)
+    else:
+        quit("Invalid command option: $#" % key)
 
 proc main() =
+  let args = readCmdLine()
   readSecrets()
-  if paramCount() < 1:
+  case userAction
+  of CmdAction:
+    authenticationRequired = true
+    if len(args) > 0:
+      case args[0]
+      of passwordCommand:
+        debug("cmd: set pwd")
+        setPassword()
+      of exportCommand:
+        debug("cmd: export")
+        exportStore()
+      of passtimeCommand:
+        debug("cmd: set password validity period")
+        if len(args) == 2:
+          setPassTime(args[1])
+      else:
+        showValuesForKeys(args)
+    else:
+      showHelp()
+  of AddAction:
+    if len(args) == 2:
+      addValue(args[0], args[1])
+    else:
+      quit("Add action (-a) requires two parameters: key and vaue")
+  of DeleteAction:
+    deleteValues(args)
+  of UpdateAction:
+    if len(args) == 2:
+      updateValue(args[0], args[1])
+    else:
+      quit("Update action (-u) requires two parameters: key and vaue")
+  of HelpAction:
     showHelp()
-  elif paramCount() == 1:
-    processValue(paramStr(1))
-  else:
-    setKeyValue(paramStr(1), paramStr(2))
-  if secretsDirty:
-    saveSecrets()
+  if storeIsDirty:
+    saveStore()
 
 main()
