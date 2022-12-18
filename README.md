@@ -12,12 +12,14 @@ the value for command line argument `storepass` of the command
 * Assuming strong passwords, you don't need to type that,
   or copy that from some place on to the command line.
 
+Additionally you can use it to store shortcuts to often used
+
 ### How secure is it?
 `kvc` stores your secrets in encrypted form ([TwoFish](https://en.wikipedia.org/wiki/Twofish)) into a file 
 called `.kvs` in your home directory. 
 You can protect access to `kvs` by setting a password with this command:
 ```
-kvc kvcpass
+kvc password
 ```
 You will be asked to enter a password (twice for confirmation).
 The effect is that when you call `kvc`, you will be asked for
@@ -26,24 +28,24 @@ for an hour, for your convenience.
 
 ### Usage
 Adding an entry:
-```asm
-user@host$ % kvc app1test iQXo59wXy9b80?h
+```
+user@host$ % kvc -a app1test iQXo59wXy9b80?h
 user@host$ %
 ```
 Retrieving an entry:
-```asm
+```
 user@host$ % kvs app1test
 iQXo59wXy9b80?h
 user@host$ %
 ```
 Delete an entry:
-```asm
-kvc app1test -
+```
+kvc -d app1test 
 user@host$ %
 ```
 Setting a password:
-```asm
-user@host$ % kvc kvcpass
+```
+user@host$ % kvc password
 Please enter KVC password:
 Please reenter KVC password:
 user@host$ %
@@ -60,7 +62,7 @@ recompilation your existing keystore will become inaccessible.
   delete the existing store at `~/.kvs`. After installing a newer 
   version you can import the contents
   ```
-  user@host$ % kvc exportentries > kvcimport.sh
+  user@host$ % kvc export > kvcimport.sh
   user@host$ % rm ~/.kvc
   user@host$ % cp <path-to-new-kvc>/kvc /usr/bin/kvc
   user@host$ % sh kvcimport.sh

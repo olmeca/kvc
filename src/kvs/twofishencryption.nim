@@ -1,18 +1,15 @@
-import std/strutils, std/sequtils, std/base64, std/strformat, std/times
-import os, sugar, nimcrypto, streams, logging
+import std/strutils, std/sequtils, std/base64
+import os, sugar, nimcrypto, logging
 import common, byteutils
 
 
 const xorKey = uint8('_')
-const bytesLen = 64
-const maxLen = 64
 const blockSize = 16
 # key size for twofish128
 const keySize = 128 div 8
 const nChunks: int = 4
 
 # String with length keySize
-var keyString = format(now(), "yyMMddHHmmss fff")
 var key: array[keySize, byte]
 var sourceBlock: array[blockSize, byte]
 var destBlock: array[blockSize, byte]
@@ -21,37 +18,37 @@ proc copyPadded*(source: string, dest: var openArray[byte]) =
   let lenSrc = len(source)
   let lenDest = len(dest)
   let charSeq = toSeq(source.items)
-  for i in 0..lenDest-1:
+  # After source is exhausted we copy spaces to dest
+  for i in 0..<lenDest:
     dest[i] = if i < lenSrc: byte(charSeq[i]) else: byte(' ')
+
+proc xorbyte(x: byte, y: byte): byte =
+  byte( uint8(x) xor uint8(y) )
+
+proc xorBytes(bytes: var array[keySize, byte]) =
+  for i in bytes.low..bytes.high:
+    bytes[i] = xorbyte(bytes[i], xorKey)
 
 proc makeEncryptionKey(source: string): array[keySize, byte] =
   let srcLen = source.len
   assert srcLen <= keySize
   copyPadded(source, result)
+  xorBytes(result)
 
 proc genKeyString(): string =
   let randomString = collect(for k in walkDir(getTempDir()): k.path).join("")
   if randomString.len > keySize: substr(randomString, 0, keySize-1) else: randomString
 
-proc xorbyte(x: byte, y: byte): byte =
-  byte( uint8(x) xor uint8(y) )
-
-
-
-proc xorBytes(bytes: array[keySize, byte]): array[keySize, byte] =
-  for i in bytes.low..bytes.high:
-    result[i] = xorbyte(bytes[i], xorKey)
-
 
 # This key is generated once, at compile time, fixed afterwards
-const fixedKey = makeEncryptionKey(genKeyString()).xorBytes()
+const fixedKey = makeEncryptionKey(genKeyString())
 
 # This key is used for encryption.
 # It is settable only for testing.
 var twofishKey = fixedKey
 
 
-proc setKey*(key: string) =
+proc setEncryptionKey*(key: string) =
   twofishKey = key.makeEncryptionKey()
 
 proc toString*(bytes: openarray[byte]): string =
@@ -61,16 +58,17 @@ proc toString*(bytes: openarray[byte]): string =
 proc twofishEncrypt*(source: string): string =
   debug("2fe source: '$#'" % source)
   let inputLen = len(source)
-  let nBlocks = (inputLen div blockSize) + 1
-  assert len(source) <= maxLen
-  var sourceBytes: array[maxLen, byte]
-  var destBytes: array[maxLen, byte]
+  let nBlocks = (inputLen div blockSize) + (if inputLen mod blockSize > 0: 1 else: 0)
+  let nBytes = nBlocks * blockSize
+  var sourceBytes = newSeq[byte](nBytes)
+  var destBytes = newSeq[byte](nBytes)
   copyPadded(source, sourceBytes)
-  debug("2fe sbytes: '$#'" % sourceBytes.toHex())
+  debug("2fe sbytes: '$#'" % byteutils.toHex(sourceBytes))
   var tf: twofish128
   init(tf, twofishKey)
   debug("encrypt $# bytes in $# blocks" % [intToStr(inputLen), intToStr(nBlocks)])
-  for i in 0..(maxLen div blockSize) - 1:
+  # Encrypt block by block
+  for i in 0..<nBlocks:
     let offset = i*blockSize
     copyMem(addr sourceBlock[0], addr sourceBytes[offset], blockSize)
     encrypt(tf, sourceBlock, destBlock)
@@ -83,23 +81,24 @@ proc twofishEncrypt*(source: string): string =
 proc twofishDecrypt*(source: string): string =
   debug("2fd source: '$#'" % source)
   var decodedBytes = decode(source)
-  let inputLen = len(decodedBytes)
-  let nBlocks = (inputLen div blockSize) + 1
-  let nBytes = nBlocks * blockSize
-  var sourceBytes: array[maxLen, byte]
-  copyMem(addr sourceBytes[0], addr decodedBytes[0], len(decodedBytes))
+  let nBytes = len(decodedBytes)
+  # assert an integer number of blocks in input
+  assert nBytes mod blockSize == 0
+  let nBlocks = nBytes div blockSize
+  var sourceBytes = newSeq[byte](nBytes)
+  var destBytes = newSeq[byte](nBytes)
+  copyMem(addr sourceBytes[0], addr decodedBytes[0], nBytes)
   # padSpaces(sourceBytes)
-  debug("2fd sbytes: '$#'" % sourceBytes.toHex())
-  var destBytes: array[maxLen, byte]
+  debug("2fd sbytes: '$#'" % byteutils.toHex(sourceBytes))
   var tf: twofish128
   init(tf, twofishKey)
-  debug("decrypt $# bytes in $# blocks" % [intToStr(inputLen), intToStr(nBlocks)])
-  for i in 0..(maxLen div blockSize) - 1:
+  debug("decrypt $# bytes in $# blocks" % [intToStr(nBytes), intToStr(nBlocks)])
+  for i in 0..<nBlocks:
     let offset = i*blockSize
     copyMem(addr sourceBlock[0], addr sourceBytes[offset], blockSize)
     decrypt(tf, sourceBlock, destBlock)
     copyMem(addr destBytes[offset], addr destBlock[0], blockSize)
-  debug("2fd dbytes: '$#'" % destBytes.toHex())
+  debug("2fd dbytes: '$#'" % byteutils.toHex(destBytes))
   result = destBytes.toString().strip()
   debug("2fd result: '$#'" % result)
 

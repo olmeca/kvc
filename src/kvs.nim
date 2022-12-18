@@ -4,16 +4,24 @@ import kvs/common, kvs/twofishencryption
 
 const
   helpText = """
-  kvs is a simple, file-based key-value store, developed to make
-  passwords easily accessible when using a command shell.
+  kvs is a simple, file-based key-value store, developed primarily
+  to make passwords easily accessible when using a command shell,
+  whilst not displaying them on the command line or in its history.
+  E.g. "keytool -storepass `kvs pwd1` ..."
+  Additionally it can be used as enabler for shortcuts on the command
+  line, e.g. "curl `kvs url1`"
 
   Usage:
-    kvs <key> <secret> stores the secret under key <key>
-    kvs <key>          prints the secret that was stored under key <key>
-    kvs <key> -        removes the secret with key <key> from the store.
-    kvs kvspass        protect the key-value store with a password
-    kvs exportentries  print for every entry a kvs command for importing
-                       into a new store.
+    kvs -a <key> <value>   stores the value under key <key>
+    kvs -u <key> <value>   updates the value for an existing key
+    kvs -d <key>           removes the value with key <key> from the store.
+    kvs <key1> <key2>...   prints the values that were stored for the given
+                           keys, separated by a space
+    kvs password           protect the key-value store with a password
+    kvs passtime <minutes> skips requiring a password on subsequent use
+                           for the given number of minutes.
+    kvs export             print for every entry in the store a kvs command
+                           for importing into a new store.
 
   Example:
     # store a password in the key-value store
@@ -25,8 +33,9 @@ const
     The key-values are stored encrypted into location '~/.kvs'
 
   Note
-  kvs is not a password vault. Access is optionally protected by a password,
-  but for convenience subsequent calls are accepted without password for an hour.
+  Use kvs as e disposable cache, to keep passwords hidden from the
+  command line history, or to minimize repetitive typing. Do not
+  use it as the main storage of your data.
 
   Created by Rudi Angela
   """
@@ -35,7 +44,7 @@ const
   passwordKey = "_kvspass"
   lastLoginKey = "_kvslastlogin"
   passwordWaivePeriodKey = "_passtime"
-  maxLoginValidityIntervalMinutes = 60
+  maxLoginValidityIntervalMinutes = 10
   
   passwordCommand = "password"
   exportCommand = "export"
@@ -126,6 +135,10 @@ proc setValue(key: string, value: string) =
   keyValueStore[key] = value
   storeIsDirty = true
 
+proc deleteValue(key: string) =
+  keyValueStore.del(key)
+  storeIsDirty = true
+
 proc isPasswordProtected(): bool =
    existsKey(passwordKey)
 
@@ -170,7 +183,7 @@ proc deleteValues(keys: seq[string]) =
   askPasswordIfNeeded()
   for key in keys:
     if not reservedKeys.contains(key):
-      keyValueStore.del(key)
+      deleteValue(key)
 
 proc updateValue(key: string, value: string) =
   validateKey(key)
@@ -207,11 +220,14 @@ proc setPassTime(value: string) =
 proc showValuesForKeys(keys: seq[string]) =
   echo keys.map(key => getValueForKey(key)).join(" ")
 
+proc escapeQuotes(source: string): string =
+  replace(source, "'", r"\'")
+
 proc exportStore() =
   askPasswordIfNeeded()
   for key, value in keyValueStore.pairs:
     if not reservedKeys.contains(key):
-      echo ("kvs -a $# '$#'" % [key, value])
+      echo ("kvs -a $# $#'$#'" % [key, "$", escapeQuotes(value)])
 
 proc readCmdLine(): seq[string] =
   result = @[]
@@ -239,6 +255,9 @@ proc readCmdLine(): seq[string] =
 
 proc main() =
   let args = readCmdLine()
+  # Only for testing we use a fixed encryption key
+  # When creating a release, either comment out or set your own key
+  setEncryptionKey("1234567890123456")
   readSecrets()
   case userAction
   of CmdAction:
