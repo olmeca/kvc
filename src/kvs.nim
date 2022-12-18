@@ -70,6 +70,7 @@ var keyValueStore = newTable[string, string]()
 var storeIsDirty = false
 var authenticationRequired = false
 var userAction = CmdAction
+var valueSeparator = " "
 
 
 proc getpass(prompt: cstring) : cstring {.header: "<unistd.h>", importc: "getpass".}
@@ -218,7 +219,7 @@ proc setPassTime(value: string) =
 
 
 proc showValuesForKeys(keys: seq[string]) =
-  echo keys.map(key => getValueForKey(key)).join(" ")
+  echo keys.map(key => getValueForKey(key)).join(valueSeparator)
 
 proc escapeQuotes(source: string): string =
   replace(source, "'", r"\'")
@@ -242,6 +243,8 @@ proc readCmdLine(): seq[string] =
         userAction = AddAction
       of "d":
         userAction = DeleteAction
+      of "s":
+        valueSeparator = value
       of "u":
         userAction = UpdateAction
       of "D":
