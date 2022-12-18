@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "olmeca"
 description   = "A simple key-value store for command line usage."
 license       = "GPL-3.0-or-later"
