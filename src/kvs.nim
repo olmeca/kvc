@@ -16,7 +16,10 @@ const
     kvs -u <key> <value>   updates the value for an existing key
     kvs -d <key>           removes the value with key <key> from the store.
     kvs <key1> <key2>...   prints the values that were stored for the given
-                           keys, separated by a space
+                           keys, concatenated
+    kvs -s:<sep> <key1>... prints the values that were stored for the given
+                           separated by the string <sep>. The default
+                           separator is a space.
     kvs password           protect the key-value store with a password
     kvs passtime <minutes> skips requiring a password on subsequent use
                            for the given number of minutes.
@@ -48,6 +51,7 @@ const
   
   passwordCommand = "password"
   exportCommand = "export"
+  listCommand = "list"
   passtimeCommand = "passtime"
   encryptionEnabled = false
 
@@ -70,7 +74,7 @@ var keyValueStore = newTable[string, string]()
 var storeIsDirty = false
 var authenticationRequired = false
 var userAction = CmdAction
-var valueSeparator = " "
+var valueSeparator = ""
 
 
 proc getpass(prompt: cstring) : cstring {.header: "<unistd.h>", importc: "getpass".}
@@ -230,6 +234,12 @@ proc exportStore() =
     if not reservedKeys.contains(key):
       echo ("kvs -a $# $#'$#'" % [key, "$", escapeQuotes(value)])
 
+proc listStore() =
+  askPasswordIfNeeded()
+  for key, value in keyValueStore.pairs:
+    if not reservedKeys.contains(key):
+      echo ("$#: '$#'" % [key, escapeQuotes(value)])
+
 proc readCmdLine(): seq[string] =
   result = @[]
   var cmdLineOptions = initOptParser()
@@ -244,7 +254,7 @@ proc readCmdLine(): seq[string] =
       of "d":
         userAction = DeleteAction
       of "s":
-        valueSeparator = value
+        valueSeparator = if value == "": " " else: value
       of "u":
         userAction = UpdateAction
       of "D":
@@ -267,6 +277,9 @@ proc main() =
     authenticationRequired = true
     if len(args) > 0:
       case args[0]
+      of listCommand:
+        debug("cmd: list")
+        listStore()
       of passwordCommand:
         debug("cmd: set pwd")
         setPassword()
