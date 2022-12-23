@@ -20,6 +20,7 @@ const
     kvs -s:<sep> <key1>... prints the values that were stored for the given
                            separated by the string <sep>. The default
                            separator is a space.
+    kvs list               list all entries (keys and values)
     kvs password           protect the key-value store with a password
     kvs passtime <minutes> skips requiring a password on subsequent use
                            for the given number of minutes.
@@ -36,7 +37,7 @@ const
     The key-values are stored encrypted into location '~/.kvs'
 
   Note
-  Use kvs as e disposable cache, to keep passwords hidden from the
+  Use kvs as a disposable cache, to keep passwords hidden from the
   command line history, or to minimize repetitive typing. Do not
   use it as the main storage of your data.
 
